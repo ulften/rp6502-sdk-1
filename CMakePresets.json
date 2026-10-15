@@ -56,16 +56,6 @@
                 "CMAKE_BUILD_TYPE": "Release",
                 "LLVM_MOS_PLATFORM": "rp6502"
             }
-        },
-        {
-            "name": "basic",
-            "displayName": "basic",
-            "description": "BASIC",
-            "inherits": "base",
-            "binaryDir": "${sourceDir}/build/basic",
-            "cacheVariables": {
-                "RP6502_BASIC": "ON"
-            }
         }
     ],
     "buildPresets": [
@@ -91,12 +81,6 @@
             "name": "llvm-mos/Release",
             "displayName": "llvm-mos/Release",
             "configurePreset": "llvm-mos/Release",
-            "targets": ["all"]
-        },
-        {
-            "name": "basic",
-            "displayName": "basic",
-            "configurePreset": "basic",
             "targets": ["all"]
         }
     ]

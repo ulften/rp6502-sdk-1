@@ -17,15 +17,11 @@
  *    krockar läser vi färgen i cellen framför.
  */
 
+#include "xram.h"
 #include <rp6502.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-
-/* XREG-genvägar, hämtade från RIA- och VGA-dokumentationen */
-#define xreg_ria_keyboard(...) xreg(0, 0, 0, __VA_ARGS__)
-#define xreg_vga_canvas(...)   xreg(1, 0, 0, __VA_ARGS__)
-#define xreg_vga_mode(...)     xreg(1, 0, 1, __VA_ARGS__)
 
 /* ---------- XRAM-karta ---------- */
 #define TEXT_XRAM 0x1000 /* 40*30*3 = 3600 byte teckendata  */
@@ -50,12 +46,11 @@
 #define KEY_ESC 0x29
 #define KEY_SPACE 0x2C
 
-/* Byt plats på dessa två om du vill ha A = höger och D = vänster */
 #define KEY_TURN_LEFT KEY_A
 #define KEY_TURN_RIGHT KEY_D
 
 /* ---------- spelinställningar ---------- */
-#define STEP_FRAMES 8 /* antal bildrutor (1/60 s) per steg. Lägre = snabbare */
+#define STEP_FRAMES 6 /* antal bildrutor (1/60 s) per steg. Lägre = snabbare */
 #define MAXLEN 1024   /* måste vara en tvåpotens */
 #define MASK (MAXLEN - 1)
 

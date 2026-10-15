@@ -3,13 +3,17 @@
 #ifndef XRAM_H
 #define XRAM_H
 
-#include <rp6502.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 /* Insert xram.h snippets from docs to build your system. */
 /* https://picocomputer.github.io/sdk.html#xram-memory-map */
+
+/* XREG-genvägar, hämtade från RIA- och VGA-dokumentationen */
+#define xreg_ria_keyboard(...) xreg(0, 0, 0, __VA_ARGS__)
+#define xreg_vga_canvas(...)   xreg(1, 0, 0, __VA_ARGS__)
+#define xreg_vga_mode(...)     xreg(1, 0, 1, __VA_ARGS__)
 
 typedef struct
 {
