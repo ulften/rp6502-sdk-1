@@ -1,8 +1,28 @@
 
 /*
- * Snake för Picocomputer 6502 - steg 2: levande bakgrund
+ * Snake för Picocomputer 6502 - steg 3b: sprites för huvud och svans
  *
- * Nytt jämfört med steg 1:
+ * Ändringar jämfört med steg 3:
+ *  - Svansen är också en sprite. När svansen lämnar en cell sätts kartan till
+ *    gräs direkt, men en kropps-sprite glider från den cellen till nästa
+ *    segment. Då rör sig båda ändarna av ormen mjukt (mitten står stilla
+ *    mellan stegen, precis som hos en riktig orm).
+ *  - Stenar (T_STONE) som ormen måste undvika. Antal styrs av NUM_STONES.
+ *  - Poängraden fylls med blanksteg så att gamla siffror inte blir kvar.
+ *
+ * Steg 3:
+ *
+ * Nytt i steg 3:
+ *  - Ormens huvud är en sprite (mode 5, 4 bitar, 8x8) som glider en pixel per
+ *    bildruta mellan cellerna, i stället för att hoppa en hel cell åt gången.
+ *    Spelets logik går fortfarande i hela celler, men VGA ritar sprite-lagret
+ *    ovanpå tile-kartan utan att 6502:an ritar om något.
+ *  - Spriten använder samma bilder som huvud-tiles (samma format i XRAM) men
+ *    en egen palett där färg 0 är genomskinlig.
+ *  - Huvudets cell i kartan är T_OCC: en tile som ser ut som gräs men räknas
+ *    som upptagen. Äpplet ligger kvar i kartan tills huvudet har glidit dit.
+ *
+ * Från steg 2 (jämfört med steg 1):
  *  - Gräset vajar: tile-bilderna för gräs skrivs om i XRAM var 32:a bildruta.
  *    Eftersom kartan bara pekar på tile-numret ändras alla gräsrutor på en gång.
  *  - Murarna glöder och äpplet blänker: vi ändrar enstaka färger i paletten
@@ -23,6 +43,8 @@
  *   0xFF40  konfiguration för tile map (16 byte)
  *   0xFF50  konfiguration för textraden (16 byte)
  *   0xFF80  palett (16 färger * 2 byte)
+ *   0xFFA0  spritepalett (som ovan, men färg 0 genomskinlig)
+ *   0xFFC0  spritelista (2 sprites * 8 byte: 0 = svans, 1 = huvud)
  */
 
 #include <rp6502.h>
@@ -33,6 +55,7 @@
 #define xreg_ria_keyboard(...) xreg(0, 0, 0, __VA_ARGS__)
 #define xreg_vga_canvas(...) xreg(1, 0, 0, __VA_ARGS__)
 #define xreg_vga_mode(...) xreg(1, 0, 1, __VA_ARGS__)
+#define xreg_vga_mode5(...) xreg(1, 0, 1, 5, __VA_ARGS__)
 
 /* ---------- XRAM-karta ---------- */
 #define TEXT_XRAM 0x1000
@@ -42,6 +65,8 @@
 #define CFG_TILES 0xFF40
 #define CFG_TEXT 0xFF50
 #define PAL_XRAM 0xFF80
+#define SPR_PAL 0xFFA0
+#define SPR_CFG 0xFFC0
 
 #define COLS 40
 #define ROWS 30
@@ -50,6 +75,10 @@
 #define MODE2_4BPP 0x02
 #define MODE2_8X8 0x00
 
+/* mode 5: sprites med palett, 4 bitar, 8x8 */
+#define MODE5_4BPP 0x02
+#define MODE5_8X8 0x00
+
 /* ---------- tile-nummer ---------- */
 #define T_HUD 0
 #define T_GRASS_A 1
@@ -57,8 +86,9 @@
 #define T_WALL 3
 #define T_BODY 4
 #define T_FOOD 5
-#define T_STONE 6
-#define T_HEAD 7 /* 7=upp 8=höger 9=ner 10=vänster (samma ordning som dir) */
+#define T_HEAD 6 /* 6=upp 7=höger 8=ner 9=vänster (samma ordning som dir) */
+#define T_OCC 10 /* ser ut som gräs, markerar cellen där huvudet är */
+#define T_STONE 11
 
 /* ---------- USB HID-tangentkoder ---------- */
 #define KEY_A 0x04
@@ -71,6 +101,7 @@
 #define KEY_TURN_RIGHT KEY_D
 
 /* ---------- spelinställningar ---------- */
+#define NUM_STONES 8
 #define STEP_FRAMES 8
 #define MAXLEN 1024
 #define MASK (MAXLEN - 1)
@@ -103,8 +134,8 @@ static const unsigned char pal[16][3] = {
     {140, 15, 25},   /* 11 äpple, mörkrött      */
     {120, 80, 30},   /* 12 skaft, brunt         */
     {255, 255, 255}, /* 13 äpplets glans (pulserar) */
-    {40, 40, 40},     /* 14 sten - grå */
-    {0, 0, 0}};
+    {160, 160, 165}, /* 14 sten, ljus          */
+    {90, 90, 100}};  /* 15 sten, mörk          */
 
 /* ---------- tile-bilder som text: en siffra/bokstav per pixel ----------
    0-9 och a-f är index i paletten ovan. */
@@ -126,16 +157,16 @@ static const char *const ART[T_HEAD][8] = {
      "65555556", "65555756", "65555556", "66666666"},
     /* T_FOOD */
     {"111c1111", "11aaaa11", "1aadaaa1", "1aaaaaa1",
-     "1aaaaaa1", "1baaaab1", "11bbbb11", "11111111"}, 
-     /* T_STONE */
-    {"11111111", "111eee11", "11e0eee1", "1eeeeee1",
-     "1eeeeee1", "11e0eee1", "111eee11", "11111111"} 
-    };
+     "1aaaaaa1", "1baaaab1", "11bbbb11", "11111111"}};
 
 /* Huvudet ritas bara en gång (uppåt) och roteras sedan i koden */
 static const char *const ART_HEAD_UP[8] = {
     "66666666", "67977976", "67877876", "67777776",
     "67777776", "67777776", "67777776", "66666666"};
+
+static const char *const ART_STONE[8] = {
+    "111ee111", "11eeeef1", "1eeeeeff", "1eeeeeff",
+    "1eeeeeff", "1feeeeff", "11ffff11", "11111111"};
 
 /* Gräsets andra bildruta: tuvorna har flyttat sig ett steg åt höger.
    [0] hör till T_GRASS_A och [1] till T_GRASS_B. */
@@ -169,6 +200,25 @@ static unsigned char get_tile(unsigned char x, unsigned char y)
     return RIA.rw0;
 }
 
+/* Placerar en sprite (idx 0 = svans, 1 = huvud). x och y är pixlar på
+   canvasen (0..319, 0..239).
+   t är tile-numret vars bild används som sprite-bild (T_HEAD + riktning).
+   Spriten är ett mode5_sprite_t: x, y, bildpekare, palettpekare (8 byte). */
+static void sprite_set(unsigned char idx, unsigned x, unsigned y, unsigned char t)
+{
+    unsigned img = TILES_XRAM + (unsigned)t * 32;
+    RIA.addr0 = SPR_CFG + (unsigned)idx * 8;
+    RIA.step0 = 1;
+    RIA.rw0 = x & 0xFF;
+    RIA.rw0 = x >> 8;
+    RIA.rw0 = y & 0xFF;
+    RIA.rw0 = y >> 8;
+    RIA.rw0 = img & 0xFF;
+    RIA.rw0 = img >> 8;
+    RIA.rw0 = SPR_PAL & 0xFF;
+    RIA.rw0 = SPR_PAL >> 8;
+}
+
 static void read_keys(void)
 {
     unsigned char i;
@@ -187,16 +237,22 @@ static void wait_vsync(void)
 
 /* ---------- tiles och palett till XRAM ---------- */
 
-/* Skriver en färg i paletten (RGB555 + alpha-bit 0x20 som gör färgen synlig) */
-static void set_color(unsigned char i, unsigned char r, unsigned char g, unsigned char b)
+/* Skriver en färg i en palett (RGB555 + alpha-bit 0x20 som gör färgen synlig) */
+static void set_color_at(unsigned base, unsigned char i,
+                         unsigned char r, unsigned char g, unsigned char b)
 {
     unsigned c = ((unsigned)(b >> 3) << 11) |
                  ((unsigned)(g >> 3) << 6) |
                  (unsigned)(r >> 3) | 0x20;
-    RIA.addr0 = PAL_XRAM + (unsigned)i * 2;
+    RIA.addr0 = base + (unsigned)i * 2;
     RIA.step0 = 1;
     RIA.rw0 = c & 0xFF; /* låg byte först */
     RIA.rw0 = c >> 8;
+}
+
+static void set_color(unsigned char i, unsigned char r, unsigned char g, unsigned char b)
+{
+    set_color_at(PAL_XRAM, i, r, g, b);
 }
 
 static void load_palette(void)
@@ -204,6 +260,14 @@ static void load_palette(void)
     unsigned char i;
     for (i = 0; i < 16; i++)
         set_color(i, pal[i][0], pal[i][1], pal[i][2]);
+
+    /* Spritepaletten är en kopia, men färg 0 är genomskinlig (alpha-bit av) */
+    for (i = 1; i < 16; i++)
+        set_color_at(SPR_PAL, i, pal[i][0], pal[i][1], pal[i][2]);
+    RIA.addr0 = SPR_PAL;
+    RIA.step0 = 1;
+    RIA.rw0 = 0;
+    RIA.rw0 = 0;
 }
 
 static void load_art(unsigned char px[8][8], const char *const *art)
@@ -259,6 +323,12 @@ static void load_tiles(void)
         store_tile(T_HEAD + k, px);
         rotate_cw(px); /* upp -> höger -> ner -> vänster */
     }
+
+    load_art(px, ART[T_GRASS_A]); /* T_OCC ser ut som gräs */
+    store_tile(T_OCC, px);
+
+    load_art(px, ART_STONE);
+    store_tile(T_STONE, px);
 }
 
 /* ---------- video ---------- */
@@ -296,6 +366,9 @@ static void video_init(void)
     xram_write(CFG_TILES, cfg_tiles, 16);
     xram_write(CFG_TEXT, cfg_text, 16);
 
+    sprite_set(0, 320, 240, T_BODY); /* utanför canvasen = osynlig */
+    sprite_set(1, 320, 240, T_HEAD);
+
     /* tomma blanksteg på textraden */
     RIA.addr0 = TEXT_XRAM;
     RIA.step0 = 1;
@@ -306,6 +379,9 @@ static void video_init(void)
     xreg_vga_mode(2, MODE2_4BPP | MODE2_8X8, CFG_TILES, 0);
     /* plan 1: text på scanline 0-7 (översta raden) */
     xreg_vga_mode(1, 0, CFG_TEXT, 1, 0, 8);
+
+    /* sprite-lagret ovanpå plan 0: 2 sprites, 8x8, 4 bitar */
+    xreg_vga_mode5(MODE5_4BPP | MODE5_8X8, SPR_CFG, 2, 0);
 
     xreg_ria_keyboard(KEYS_XRAM);
 }
@@ -351,7 +427,7 @@ static void status(const char *s)
         RIA.rw0 = *s++;
         x++;
     }
-    while (x < 39)
+    while (x < 29)
     {
         RIA.rw0 = ' ';
         x++;
@@ -367,6 +443,8 @@ static void show_score(void)
     RIA.step0 = 1;
     for (i = 0; buf[i]; i++)
         RIA.rw0 = buf[i];
+    for (; i < 10; i++) /* fyll ut till kolumn 39 så gamla siffror försvinner */
+        RIA.rw0 = ' ';
 }
 
 static void place_food(void)
@@ -380,22 +458,24 @@ static void place_food(void)
     put_tile(fx, fy, T_FOOD);
 }
 
+/* Slumpar ut stenar på ledigt gräs, men inte på ormens startsträcka
+   (rad 14-16, kolumn 16-32) så att man inte dör direkt. */
 static void place_stones(void)
 {
-    unsigned char fx, fy;
-    int i;
-
-    for (i = 0; i < 5; i++) {
+    unsigned char i, fx, fy;
+    for (i = 0; i < NUM_STONES; i++)
+    {
         do
         {
-            fx = 1 + rand() % 38; /* kolumn 1..38 */
-            fy = 2 + rand() % 27; /* rad 2..28    */
-        } while (fy==15 || !is_grass(get_tile(fx, fy)));
+            fx = 1 + rand() % 38;
+            fy = 2 + rand() % 27;
+        } while (!is_grass(get_tile(fx, fy)) ||
+                 (fy >= 14 && fy <= 16 && fx >= 16 && fx <= 32));
         put_tile(fx, fy, T_STONE);
     }
 }
 
-/* ---------- animation ---------- */ 
+/* ---------- animation ---------- */
 
 /* Gräset: skriv om tile-bilden för T_GRASS_A och T_GRASS_B.
    phase 0 = ursprungsbilden, phase 1 = tuvorna ett steg åt höger. */
@@ -405,6 +485,7 @@ static void sway(unsigned char phase)
 
     load_art(px, phase ? ART_GRASS_ALT[0] : ART[T_GRASS_A]);
     store_tile(T_GRASS_A, px);
+    store_tile(T_OCC, px); /* T_OCC ska vaja som gräs */
     load_art(px, phase ? ART_GRASS_ALT[1] : ART[T_GRASS_B]);
     store_tile(T_GRASS_B, px);
 }
@@ -436,10 +517,16 @@ static void animate(void)
 static unsigned char play(void)
 {
     unsigned char dir = 1; /* börja åt höger */
+    unsigned char vdir = 1;
     unsigned char turn = 0;
     unsigned char frames = 0;
+    unsigned char started = 0; /* huvudet glider först efter första steget */
     unsigned char a, d, prev_a, prev_d;
     unsigned char hx, hy, nx, ny, t;
+    unsigned char vx = 20, vy = 15; /* cellen huvudspriten glider ifrån */
+    unsigned char tx = 18, ty = 15; /* cellen svansspriten glider ifrån */
+    signed char tdx = 0, tdy = 0;   /* svansens riktning (0 = står still) */
+    unsigned char off;
 
     draw_board();
     status("A/D = TURN   ESC = QUIT");
@@ -451,7 +538,9 @@ static unsigned char play(void)
     head = 3;
     put_tile(18, 15, T_BODY);
     put_tile(19, 15, T_BODY);
-    put_tile(20, 15, T_HEAD + dir);
+    put_tile(20, 15, T_OCC); /* huvudets cell: ser ut som gräs men är upptagen */
+    sprite_set(0, 18 * 8, 15 * 8, T_BODY);
+    sprite_set(1, 20 * 8, 15 * 8, T_HEAD + dir);
 
     score = 0;
     show_score();
@@ -480,40 +569,72 @@ static unsigned char play(void)
         prev_a = a;
         prev_d = d;
 
-        if (++frames < STEP_FRAMES)
-            continue;
-        frames = 0;
-
-        dir = (dir + turn) & 3;
-        turn = 0;
-
-        hx = sx[(head - 1) & MASK];
-        hy = sy[(head - 1) & MASK];
-        nx = hx + dx[dir];
-        ny = hy + dy[dir];
-
-        t = get_tile(nx, ny); /* vad finns i cellen framför huvudet? */
-        if (t == T_WALL || t == T_BODY || t == T_STONE)
-            return 1;
-
-        put_tile(hx, hy, T_BODY); /* gamla huvudet blir kropp */
-        sx[head] = nx;
-        sy[head] = ny;
-        head = (head + 1) & MASK;
-        put_tile(nx, ny, T_HEAD + dir); /* huvudet tittar åt färdriktningen */
-
-        if (t == T_FOOD)
+        /* Spelets logik går i hela celler, ett steg var STEP_FRAMES bildruta */
+        if (++frames >= STEP_FRAMES)
         {
-            ++score;
-            show_score();
-            place_food();
+            frames = 0;
+
+            dir = (dir + turn) & 3;
+            turn = 0;
+
+            hx = sx[(head - 1) & MASK];
+            hy = sy[(head - 1) & MASK];
+            nx = hx + dx[dir];
+            ny = hy + dy[dir];
+
+            /* båda spritarna har nu glidit klart; vänd huvudet åt nya hållet */
+            sprite_set(0, (unsigned)(tx + tdx) * 8, (unsigned)(ty + tdy) * 8, T_BODY);
+            sprite_set(1, (unsigned)hx * 8, (unsigned)hy * 8, T_HEAD + dir);
+
+            t = get_tile(nx, ny); /* vad finns i cellen framför huvudet? */
+            if (t == T_WALL || t == T_BODY || t == T_OCC || t == T_STONE)
+                return 1;
+
+            put_tile(hx, hy, T_BODY); /* gamla huvudcellen blir kropp */
+            sx[head] = nx;
+            sy[head] = ny;
+            head = (head + 1) & MASK;
+
+            if (t == T_FOOD)
+            {
+                /* Äpplet ligger kvar i kartan tills huvudspriten har glidit dit.
+                   Ormen växer: svansen står still. */
+                ++score;
+                show_score();
+                place_food();
+                tx = sx[tail];
+                ty = sy[tail];
+                tdx = 0;
+                tdy = 0;
+            }
+            else
+            {
+                put_tile(nx, ny, T_OCC); /* huvudets nya cell */
+
+                /* Svansen lämnar sin cell: kartan blir gräs direkt, men
+                   svansspriten glider från cellen mot nästa segment. */
+                tx = sx[tail];
+                ty = sy[tail];
+                put_tile(tx, ty, grass_tile(tx, ty));
+                tail = (tail + 1) & MASK;
+                tdx = (signed char)((int)sx[tail] - (int)tx);
+                tdy = (signed char)((int)sy[tail] - (int)ty);
+            }
+
+            vx = hx;
+            vy = hy;
+            vdir = dir;
+            started = 1;
         }
-        else
-        {
-            /* svansen försvinner: tillbaka till gräs */
-            put_tile(sx[tail], sy[tail], grass_tile(sx[tail], sy[tail]));
-            tail = (tail + 1) & MASK;
-        }
+
+        /* Varje bildruta: flytta spritarna en bit mot sina nästa celler */
+        off = (unsigned char)((unsigned)frames * 8 / STEP_FRAMES);
+        sprite_set(0, (unsigned)(tx * 8 + tdx * off),
+                   (unsigned)(ty * 8 + tdy * off), T_BODY);
+        if (!started)
+            off = 0;
+        sprite_set(1, (unsigned)(vx * 8 + dx[vdir] * off),
+                   (unsigned)(vy * 8 + dy[vdir] * off), T_HEAD + vdir);
     }
 }
 
