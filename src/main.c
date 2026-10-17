@@ -351,7 +351,7 @@ static void status(const char *s)
         RIA.rw0 = *s++;
         x++;
     }
-    while (x < 29)
+    while (x < 39)
     {
         RIA.rw0 = ' ';
         x++;
@@ -367,8 +367,6 @@ static void show_score(void)
     RIA.step0 = 1;
     for (i = 0; buf[i]; i++)
         RIA.rw0 = buf[i];
-    for (; i < 39; i++)
-        RIA.rw0 = ' ';
 }
 
 static void place_food(void)
@@ -392,12 +390,12 @@ static void place_stones(void)
         {
             fx = 1 + rand() % 38; /* kolumn 1..38 */
             fy = 2 + rand() % 27; /* rad 2..28    */
-        } while (!is_grass(get_tile(fx, fy)));
+        } while (fy==15 || !is_grass(get_tile(fx, fy)));
         put_tile(fx, fy, T_STONE);
     }
 }
 
-/* ---------- animation ---------- */
+/* ---------- animation ---------- */ 
 
 /* Gräset: skriv om tile-bilden för T_GRASS_A och T_GRASS_B.
    phase 0 = ursprungsbilden, phase 1 = tuvorna ett steg åt höger. */
