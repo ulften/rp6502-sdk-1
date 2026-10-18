@@ -1,5 +1,15 @@
 /*
- * Snake för Picocomputer 6502 - steg 3c: stenar bakom svansen
+ * Snake för Picocomputer 6502 - steg 4: ljud (PSG)
+ *
+ * Nytt i steg 4: ljudgeneratorn PSG (8 kanaler) styrs genom 64 byte i XRAM,
+ * precis som tangentbordet och spritelistan. Tre ljudeffekter:
+ *  - äta äpple: kort fyrkantsvåg med stigande tonhöjd
+ *  - sten landar: ett kort brus ("duns")
+ *  - game over: sågtandsvåg med fallande tonhöjd
+ * Ljuden startas med gate = 1 och klingar ut när gate sätts till 0.
+ * sfx_update() körs varje bildruta och sköter tonhöjd och gate.
+ *
+ * Steg 3c: stenar bakom svansen
  *
  * Nytt i 3c: var STONE_EVERY:e äpple ger en sten som landar i cellen som
  * svansen lämnar. Den avslöjas när svansspriten glider bort. Högst STONE_MAX
@@ -50,6 +60,7 @@
  *   0xFF80  palett (16 färger * 2 byte)
  *   0xFFA0  spritepalett (som ovan, men färg 0 genomskinlig)
  *   0xFFC0  spritelista (2 sprites * 8 byte: 0 = svans, 1 = huvud)
+ *   0xFE00  PSG, ljudgeneratorn (8 kanaler * 8 byte)
  */
 
 #include <rp6502.h>
@@ -61,6 +72,7 @@
 #define xreg_vga_canvas(...) xreg(1, 0, 0, __VA_ARGS__)
 #define xreg_vga_mode(...) xreg(1, 0, 1, __VA_ARGS__)
 #define xreg_vga_mode5(...) xreg(1, 0, 1, 5, __VA_ARGS__)
+#define xreg_ria_psg(...) xreg(0, 1, 0, __VA_ARGS__)
 
 /* ---------- XRAM-karta ---------- */
 #define TEXT_XRAM 0x1000
@@ -72,6 +84,7 @@
 #define PAL_XRAM 0xFF80
 #define SPR_PAL 0xFFA0
 #define SPR_CFG 0xFFC0
+#define PSG_XRAM 0xFE00 /* 64 byte, jämn adress, korsar ingen sidgräns */
 
 #define COLS 40
 #define ROWS 30
@@ -83,6 +96,17 @@
 /* mode 5: sprites med palett, 4 bitar, 8x8 */
 #define MODE5_4BPP 0x02
 #define MODE5_8X8 0x00
+
+/* PSG: vågformer (övre halvan av release_wave) och gate-biten */
+#define PSG_WAVE_SQUARE 0x10
+#define PSG_WAVE_SAWTOOTH 0x20
+#define PSG_WAVE_NOISE 0x40
+#define PSG_GATE 0x01
+
+/* PSG-kanalerna vi använder */
+#define CH_EAT 0
+#define CH_STONE 1
+#define CH_OVER 2
 
 /* ---------- tile-nummer ---------- */
 #define T_HUD 0
@@ -486,6 +510,100 @@ static void place_stones(void)
     }
 }
 
+/* ---------- ljud (PSG) ---------- */
+
+/* Varje PSG-kanal är 8 byte i XRAM:
+   frekvens (Hz * 3, 2 byte), duty, attack, decay, release + vågform,
+   pan + gate, och en reserverad byte. */
+
+static unsigned char sfx_eat_t, sfx_stone_t, sfx_over_t; /* bildrutor kvar */
+
+static void sound_init(void)
+{
+    unsigned char i;
+    RIA.addr0 = PSG_XRAM;
+    RIA.step0 = 1;
+    for (i = 0; i < 64; i++)
+        RIA.rw0 = 0; /* alla kanaler tysta (gate = 0) */
+    xreg_ria_psg(PSG_XRAM);
+}
+
+static void sound_off(void)
+{
+    xreg_ria_psg(0xFFFF); /* stäng av PSG */
+}
+
+/* Startar en ton. Gate = 1 startar attack och decay. */
+static void psg_note(unsigned char ch, unsigned hz, unsigned char attack,
+                     unsigned char decay, unsigned char wave_release)
+{
+    unsigned f = hz * 3;
+    RIA.addr0 = PSG_XRAM + (unsigned)ch * 8;
+    RIA.step0 = 1;
+    RIA.rw0 = f & 0xFF;
+    RIA.rw0 = f >> 8;
+    RIA.rw0 = 128; /* duty 50 % */
+    RIA.rw0 = attack;
+    RIA.rw0 = decay;
+    RIA.rw0 = wave_release;
+    RIA.rw0 = PSG_GATE; /* pan i mitten, gate på */
+}
+
+static void psg_freq(unsigned char ch, unsigned hz)
+{
+    unsigned f = hz * 3;
+    RIA.addr0 = PSG_XRAM + (unsigned)ch * 8;
+    RIA.step0 = 1;
+    RIA.rw0 = f & 0xFF;
+    RIA.rw0 = f >> 8;
+}
+
+static void psg_release(unsigned char ch)
+{
+    RIA.addr0 = PSG_XRAM + (unsigned)ch * 8 + 6;
+    RIA.step0 = 1;
+    RIA.rw0 = 0; /* gate av: tonen klingar ut (release) */
+}
+
+static void sfx_eat(void)
+{
+    psg_note(CH_EAT, 440, 0x00, 0x30, PSG_WAVE_SQUARE | 3);
+    sfx_eat_t = 8;
+}
+
+static void sfx_stone(void)
+{
+    psg_note(CH_STONE, 200, 0x00, 0x40, PSG_WAVE_NOISE | 4);
+    sfx_stone_t = 6;
+}
+
+static void sfx_over(void)
+{
+    psg_note(CH_OVER, 330, 0x00, 0x20, PSG_WAVE_SAWTOOTH | 6);
+    sfx_over_t = 45;
+}
+
+/* Anropas varje bildruta: glider tonhöjden och stänger gate när tiden gått */
+static void sfx_update(void)
+{
+    if (sfx_eat_t)
+    {
+        if (--sfx_eat_t == 0)
+            psg_release(CH_EAT);
+        else
+            psg_freq(CH_EAT, 440 + (8 - sfx_eat_t) * 60); /* stiger */
+    }
+    if (sfx_stone_t && --sfx_stone_t == 0)
+        psg_release(CH_STONE);
+    if (sfx_over_t)
+    {
+        if (--sfx_over_t == 0)
+            psg_release(CH_OVER);
+        else
+            psg_freq(CH_OVER, 330 - (45 - sfx_over_t) * 6); /* faller */
+    }
+}
+
 /* Lägger en sten i cellen (x,y). Är kön full blir den äldsta stenen gräs. */
 static void drop_stone(unsigned char x, unsigned char y)
 {
@@ -503,6 +621,7 @@ static void drop_stone(unsigned char x, unsigned char y)
     stq_y[i] = y;
     ++stq_count;
     put_tile(x, y, T_STONE);
+    sfx_stone();
 }
 
 /* ---------- animation ---------- */
@@ -535,6 +654,7 @@ static void pulse(void)
 static void animate(void)
 {
     ++tick;
+    sfx_update();
     if ((tick & 3) == 0)
         pulse();
     if ((tick & 31) == 0)
@@ -620,7 +740,10 @@ static unsigned char play(void)
 
             t = get_tile(nx, ny); /* vad finns i cellen framför huvudet? */
             if (t == T_WALL || t == T_BODY || t == T_OCC || t == T_STONE)
+            {
+                sfx_over();
                 return 1;
+            }
 
             put_tile(hx, hy, T_BODY); /* gamla huvudcellen blir kropp */
             sx[head] = nx;
@@ -633,6 +756,7 @@ static unsigned char play(void)
                    Ormen växer: svansen står still. */
                 ++score;
                 show_score();
+                sfx_eat();
                 if (score % STONE_EVERY == 0)
                     ++pending; /* landar när svansen nästa gång flyttar sig */
                 place_food();
@@ -698,20 +822,24 @@ int main(void)
     unsigned seed;
 
     video_init();
+    sound_init();
     draw_board();
     status("PRESS SPACE TO START");
 
     seed = wait_for_space();
-    if (!seed)
-        return 0;
-    srand(seed);
-
-    for (;;)
+    if (seed)
     {
-        if (!play())
-            return 0;
-        status("GAME OVER  SPACE = AGAIN");
-        if (!wait_for_space())
-            return 0;
+        srand(seed);
+        for (;;)
+        {
+            if (!play())
+                break;
+            status("GAME OVER  SPACE = AGAIN");
+            if (!wait_for_space())
+                break;
+        }
     }
+
+    sound_off(); /* tysta PSG:n innan vi lämnar spelet */
+    return 0;
 }
