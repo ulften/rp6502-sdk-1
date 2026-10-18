@@ -1,6 +1,11 @@
-
 /*
- * Snake för Picocomputer 6502 - steg 3b: sprites för huvud och svans
+ * Snake för Picocomputer 6502 - steg 3c: stenar bakom svansen
+ *
+ * Nytt i 3c: var STONE_EVERY:e äpple ger en sten som landar i cellen som
+ * svansen lämnar. Den avslöjas när svansspriten glider bort. Högst STONE_MAX
+ * sådana stenar finns kvar på planen; när en ny kommer blir den äldsta gräs.
+ *
+ * Steg 3b: sprites för huvud och svans
  *
  * Ändringar jämfört med steg 3:
  *  - Svansen är också en sprite. När svansen lämnar en cell sätts kartan till
@@ -101,7 +106,9 @@
 #define KEY_TURN_RIGHT KEY_D
 
 /* ---------- spelinställningar ---------- */
-#define NUM_STONES 8
+#define NUM_STONES 8   /* stenar som finns från början */
+#define STONE_MAX 6    /* högst så många stenar från äpplen åt gången */
+#define STONE_EVERY 1  /* en sten per så här många äpplen */
 #define STEP_FRAMES 8
 #define MAXLEN 1024
 #define MASK (MAXLEN - 1)
@@ -112,6 +119,10 @@ static unsigned char sx[MAXLEN], sy[MAXLEN];
 static unsigned head, tail;
 static unsigned score;
 static unsigned char tick; /* räknar bildrutor, styr animationerna */
+
+/* kö med de stenar som äpplen gett, äldst först (ringbuffert) */
+static unsigned char stq_x[STONE_MAX], stq_y[STONE_MAX];
+static unsigned char stq_first, stq_count;
 
 static const signed char dx[4] = {0, 1, 0, -1};
 static const signed char dy[4] = {-1, 0, 1, 0};
@@ -475,6 +486,25 @@ static void place_stones(void)
     }
 }
 
+/* Lägger en sten i cellen (x,y). Är kön full blir den äldsta stenen gräs. */
+static void drop_stone(unsigned char x, unsigned char y)
+{
+    unsigned char i;
+
+    if (stq_count == STONE_MAX)
+    {
+        put_tile(stq_x[stq_first], stq_y[stq_first],
+                 grass_tile(stq_x[stq_first], stq_y[stq_first]));
+        stq_first = (stq_first + 1) % STONE_MAX;
+        --stq_count;
+    }
+    i = (stq_first + stq_count) % STONE_MAX;
+    stq_x[i] = x;
+    stq_y[i] = y;
+    ++stq_count;
+    put_tile(x, y, T_STONE);
+}
+
 /* ---------- animation ---------- */
 
 /* Gräset: skriv om tile-bilden för T_GRASS_A och T_GRASS_B.
@@ -527,6 +557,7 @@ static unsigned char play(void)
     unsigned char tx = 18, ty = 15; /* cellen svansspriten glider ifrån */
     signed char tdx = 0, tdy = 0;   /* svansens riktning (0 = står still) */
     unsigned char off;
+    unsigned char pending = 0; /* stenar som ska landa bakom svansen */
 
     draw_board();
     status("A/D = TURN   ESC = QUIT");
@@ -544,6 +575,7 @@ static unsigned char play(void)
 
     score = 0;
     show_score();
+    stq_first = stq_count = 0;
     place_stones();
     place_food();
 
@@ -601,6 +633,8 @@ static unsigned char play(void)
                    Ormen växer: svansen står still. */
                 ++score;
                 show_score();
+                if (score % STONE_EVERY == 0)
+                    ++pending; /* landar när svansen nästa gång flyttar sig */
                 place_food();
                 tx = sx[tail];
                 ty = sy[tail];
@@ -616,6 +650,11 @@ static unsigned char play(void)
                 tx = sx[tail];
                 ty = sy[tail];
                 put_tile(tx, ty, grass_tile(tx, ty));
+                if (pending)
+                {
+                    drop_stone(tx, ty); /* syns när svansspriten glider bort */
+                    --pending;
+                }
                 tail = (tail + 1) & MASK;
                 tdx = (signed char)((int)sx[tail] - (int)tx);
                 tdy = (signed char)((int)sy[tail] - (int)ty);
