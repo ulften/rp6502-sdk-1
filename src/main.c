@@ -470,6 +470,41 @@ static void status(const char *s)
 }
 
 static void show_score(void)
+{   // version utan sprintf() som inte finns i Picocomputer C17
+
+    static const unsigned powers[4] = {1000, 100, 10, 1};
+    static const char label[] = "SCORE ";
+    unsigned n = score;
+    unsigned char i, d, started = 0, col = 0;
+
+    RIA.addr0 = TEXT_XRAM + 30;
+    RIA.step0 = 1;
+    for (i = 0; label[i]; i++)
+    {
+        RIA.rw0 = label[i];
+        ++col;
+    }
+    for (i = 0; i < 4; i++)
+    {
+        d = 0;
+        while (n >= powers[i])
+        {
+            n -= powers[i];
+            ++d;
+        }
+        if (d || started || i == 3) /* inga inledande nollor */
+        {
+            RIA.rw0 = '0' + d;
+            started = 1;
+            ++col;
+        }
+    }
+    for (; col < 10; col++)
+        RIA.rw0 = ' '; /* rensar gamla siffror */
+}
+
+#if 0
+static void show_score(void)
 {
     char buf[12];
     unsigned char i;
@@ -481,6 +516,7 @@ static void show_score(void)
     for (; i < 10; i++) /* fyll ut till kolumn 39 så gamla siffror försvinner */
         RIA.rw0 = ' ';
 }
+#endif
 
 static void place_food(void)
 {

@@ -54,7 +54,8 @@
             "binaryDir": "${sourceDir}/build/llvm-mos/release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "LLVM_MOS_PLATFORM": "rp6502"
+                "LLVM_MOS_PLATFORM": "rp6502",
+                "CMAKE_C_FLAGS_RELEASE": "-Os -DNDEBUG"
             }
         }
     ],
