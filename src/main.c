@@ -66,6 +66,8 @@
 #include <rp6502.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 /* XREG-genvägar, hämtade från RIA- och VGA-dokumentationen */
 #define xreg_ria_keyboard(...) xreg(0, 0, 0, __VA_ARGS__)
@@ -210,6 +212,39 @@ static const char *const ART_GRASS_ALT[2][8] = {
      "11111112", "11111111", "11211111", "11111111"},
     {"11111111", "11111111", "11111211", "12111111",
      "11111111", "21111111", "11121111", "11111111"}};
+
+/* ---------- Loggning till konsolen (stderr), utan printf ---------- */
+
+static void log_str(const char *s)
+{
+    write(STDERR_FILENO, s, strlen(s));
+}
+
+/* Skriver "ERROR: msg" på en egen rad */
+static void log_error(const char *msg)
+{
+    log_str("ERROR: ");
+    log_str(msg);
+    log_str("\r\n");
+}
+
+/* Skriver "label=n" på en egen rad, t.ex. log_num("score", score) */
+static void log_num(const char *label, unsigned n)
+{
+    char buf[6];
+    unsigned char i = sizeof buf - 1;
+
+    buf[i] = 0;
+    do
+    {
+        buf[--i] = '0' + n % 10;
+        n /= 10;
+    } while (n);
+    log_str(label);
+    log_str("=");
+    log_str(buf + i);
+    log_str("\r\n");
+}
 
 /* ---------- XRAM-hjälpfunktioner ---------- */
 
@@ -792,6 +827,7 @@ static unsigned char play(void)
                    Ormen växer: svansen står still. */
                 ++score;
                 show_score();
+                log_num("score", score);
                 sfx_eat();
                 if (score % STONE_EVERY == 0)
                     ++pending; /* landar när svansen nästa gång flyttar sig */
